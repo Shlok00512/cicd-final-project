@@ -1,0 +1,121 @@
+#
+# This pipeline uses the following tasks from Tekton Hub:
+#   - git-clone
+#
+# Custom tasks defined in tasks.yaml:
+#   - cleanup
+#   - lint
+#   - pytest
+#   - buildah
+#   - deploy-image
+#
+---
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: cd-pipeline
+spec:
+  workspaces:
+    - name: pipeline-workspace
+
+  params:
+    - name: repo-url
+      description: The Git repository URL
+      type: string
+    - name: branch
+      description: The branch to build
+      type: string
+      default: main
+    - name: build-image
+      description: The fully qualified image name to build
+      type: string
+
+  tasks:
+    # Task 1: Clean up workspace
+    - name: init
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
+      taskRef:
+        name: cleanup
+
+    # Task 2: Clone the repository
+    - name: clone
+      workspaces:
+        - name: output
+          workspace: pipeline-workspace
+      taskRef:
+        name: git-clone
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.branch)
+      runAfter:
+        - init
+
+    # Task 3: Lint the code
+    - name: lint
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
+      taskRef:
+        name: lint
+      params:
+        - name: image
+          value: "python:3.9-slim"
+        - name: args
+          value: "--count --max-complexity=10 --max-line-length=127 --statistics"
+      runAfter:
+        - clone
+
+    # Task 4: Run unit tests
+    - name: tests
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
+      taskRef:
+        name: pytest
+      params:
+        - name: image
+          value: "python:3.9-slim"
+        - name: database_uri
+          value: "sqlite:///test.db"
+      runAfter:
+        - lint
+
+    # Task 5: Build the container image
+    - name: build
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
+      taskRef:
+        name: buildah
+      params:
+        - name: IMAGE
+          value: $(params.build-image)
+        - name: DOCKERFILE
+          value: "./Dockerfile"
+        - name: CONTEXT
+          value: "."
+        - name: TLSVERIFY
+          value: "false"
+        - name: FORMAT
+          value: "oci"
+      runAfter:
+        - tests
+
+    # Task 6: Deploy to OpenShift
+    - name: deploy
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
+      taskRef:
+        name: deploy-image
+      params:
+        - name: image_name
+          value: $(params.build-image)
+        - name: manifest_dir
+          value: "deploy"
+      runAfter:
+        - build
